@@ -8,25 +8,22 @@
 				"field": "show_url",
 				"selector": "url",
 				"attr": "",
+				"connector": "",
 				"default": "<url>"
 			},
 			{
 				"field": "unknown",
 				"selector": "//h6",
 				"attr": "text",
+				"connector": "",
 				"default": "<unknown>"
 			},
 			{
 				"field": "year",
 				"selector": "//span[@class='year']",
 				"attr": "text",
+				"connector": "",
 				"default": "<year>"
-			},
-			{
-				"field": "image",
-				"selector": "//div[@class='poster']/img[@class='real']",
-				"attr": "src",
-				"default": "<image>"
 			}
 		]
 	}

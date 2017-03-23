@@ -12,13 +12,7 @@ except ImportError:
 	from urllib.parse import urljoin
 
 from scrapple.selectors.selector import Selector
-
-
-def make_ascii(s):
-    """
-    Convert text to ASCII
-    """
-    return "".join(i for i in s if ord(i) < 128)
+from scrapple.utils.text import make_ascii
 
 
 class CssSelector(Selector):
@@ -35,7 +29,7 @@ class CssSelector(Selector):
 		super(CssSelector, self).__init__(url)
 
 
-	def extract_content(self, selector, attr, default):
+	def extract_content(self, *args, **kwargs):
 		"""
 		Method for performing the content extraction for the given CSS selector.
 
@@ -62,12 +56,13 @@ class CssSelector(Selector):
 
 		"""
 		try:
+			selector, attr, default, connector = [kwargs.get(x, '') for x in ['selector', 'attr', 'default', 'connector']]
 			if selector == "url":
 				return self.url
 			sel = cssselect.CSSSelector(selector)
 			if attr == "text":
 				tag = sel(self.tree)[0]
-				content = " ".join([make_ascii(x).strip() for x in tag.itertext()])
+				content = connector.join([make_ascii(x).strip() for x in tag.itertext()])
 				content = content.replace("\n", " ").strip()				
 			else:
 				content = sel(self.tree)[0].get(attr)
@@ -80,7 +75,7 @@ class CssSelector(Selector):
 			raise Exception("There is no content for the selector " + selector)
 
 
-	def extract_links(self, selector):
+	def extract_links(self, *args, **kwargs):
 		"""
 		Method for performing the link extraction for the crawler implementation.
 
@@ -100,14 +95,102 @@ class CssSelector(Selector):
 		:return: A ``CssSelector`` object for every page to be crawled through 
 		
 		"""
-		sel = cssselect.CSSSelector(selector)
-		links = sel(self.tree)
-		for link in links:
-			next_url = urljoin(self.url, link.get('href'))
-			yield CssSelector(next_url)
+		try:
+			selector = kwargs.get('selector', '')
+			sel = cssselect.CSSSelector(selector)
+			links = sel(self.tree)
+			for link in links:
+				next_url = urljoin(self.url, link.get('href'))
+				yield CssSelector(next_url)
+		except Exception:
+			raise Exception("Invalid CSS selector " + selector)
 
 
-	def extract_tabular(self, result={}, table_type="rows", header=[], prefix="", suffix="", selector="", attr="text", default="", verbosity=0):
+	def extract_rows(self, *args, **kwargs):
+		"""
+		Row data extraction for extract_tabular
+		"""
+		result_list = []
+		result = kwargs.get('result', {})
+
+		try:
+			sel = cssselect.CSSSelector(kwargs.get('selector', ''))
+			values = sel(self.tree)
+			if len(kwargs.get('table_headers', [])) >= len(values):
+				from itertools import izip_longest
+				pairs = izip_longest(kwargs.get('table_headers', []), values, fillvalue=kwargs.get('default', ''))
+			else:
+				from itertools import izip
+				pairs = izip(kwargs.get('table_headers', []), values)
+			for head, val in pairs:
+				if kwargs.get('verbosity', 0) > 1:
+					print("\nExtracting", head, "attribute", sep=' ', end='')
+				if kwargs.get('attr', 'text') == "text":
+					try:
+						content = kwargs.get('connector', '').join([make_ascii(x).strip() for x in val.itertext()])
+					except Exception:
+						content = kwargs.get('default', '')
+					content = content.replace("\n", " ").strip()
+				else:
+					content = val.get(kwargs.get('attr', 'text'))
+					if kwargs.get('attr', 'text') in ["href", "src"]:
+						content = urljoin(self.url, content)
+				result[head] = content
+			result_list.append(result)
+		except TypeError:
+			raise Exception("Selector expression string to be provided. Got " + kwargs.get('selector', ''))
+
+		return result_list
+
+
+	def extract_columns(self, *args, **kwargs):
+		"""
+		Column data extraction for extract_tabular
+		"""
+		result_list = []
+		result = kwargs.get('result', {})
+
+		try:
+			if type(kwargs.get('selector', '')) in [str, unicode]:
+				selectors = [kwargs.get('selector', '')]
+			elif type(kwargs.get('selector', '')) == list:
+				selectors = kwargs.get('selector', '')
+			else:
+				raise Exception("Use a list of selector expressions for the various columns")
+			from itertools import izip, count
+			pairs = izip(kwargs.get('table_headers', []), selectors)
+			columns = {}
+			for head, selector in pairs:
+				sel = cssselect.CSSSelector(selector)
+				columns[head] = sel(self.tree)
+			try:
+				for i in count(start=0):
+					r = result.copy()
+					for head in columns.keys():
+						if kwargs.get('verbosity', 0) > 1:
+							print("\nExtracting", head, "attribute", sep=' ', end='')
+						col = columns[head][i]
+						if kwargs.get('attr', 'text') == "text":
+							try:
+								content = kwargs.get('connector', '').join([make_ascii(x).strip() for x in col.itertext()])
+							except Exception:
+								content = kwargs.get('default', '')
+							content = content.replace("\n", " ").strip()
+						else:
+							content = col.get(kwargs.get('attr', 'text'))
+							if kwargs.get('attr', 'text') in ["href", "src"]:
+								content = urljoin(self.url, content)
+						r[head] = content
+					result_list.append(r)
+			except IndexError:
+				pass
+		except TypeError:
+			raise Exception("Selector expression string to be provided. Got " + selector)
+
+		return result_list
+
+
+	def extract_tabular(self, *args, **kwargs):
 		"""
 		Method for performing the extraction of tabular data.
 
@@ -129,82 +212,24 @@ class CssSelector(Selector):
 		:return: A 2-tuple containing the list of all the column headers extracted and the list of \
 		dictionaries which contain (header, content) pairs
 		"""
+		result = kwargs.get('result', {})
 		result_list = []
-		if type(header) in [str, unicode]:
+		if type(kwargs.get('header', [])) in [str, unicode]:
 			try:
-				sel = cssselect.CSSSelector(header)
+				sel = cssselect.CSSSelector(kwargs.get('header', []))
 				header_list = sel(self.tree)
-				table_headers = [prefix + h.text + suffix for h in header_list]
+				table_headers = [kwargs.get('prefix', '') + h.text + kwargs.get('suffix', '') for h in header_list]
 				if len(table_headers) == 0:
-					raise Exception("Invalid CSS selector " + header)
+					raise Exception("Invalid CSS selector " + kwargs.get('header', []))
 			except TypeError:
-				raise Exception("Selector expression string to be provided. Got " + selector)
+				raise Exception("Selector expression string to be provided. Got " + kwargs.get('header', []))
 		else:
-			table_headers = [prefix + h + suffix for h in header]
-		if table_type not in ["rows", "columns"]:
+			table_headers = [kwargs.get('prefix', '') + h + kwargs.get('suffix', '') for h in kwargs.get('header', [])]
+		if kwargs.get('table_type', 'rows') not in ["rows", "columns"]:
 			raise Exception("Specify 'rows' or 'columns' in table_type")
-		if table_type == "rows":
-			try:
-				sel = cssselect.CSSSelector(selector)
-				values = sel(self.tree)
-				if len(table_headers) >= len(values):
-					from itertools import izip_longest
-					pairs = izip_longest(table_headers, values, fillvalue=default)
-				else:
-					from itertools import izip
-					pairs = izip(table_headers, values)
-				for head, val in pairs:
-					if verbosity > 1:
-						print("\nExtracting", head, "attribute", sep=' ', end='')
-					if attr == "text":
-						try:
-							content = " ".join([make_ascii(x).strip() for x in val.itertext()])
-						except Exception:
-							content = default
-						content = content.replace("\n", " ").strip()
-					else:
-						content = val.get(attr)
-						if attr in ["href", "src"]:
-							content = urljoin(self.url, content)
-					result[head] = content
-				result_list.append(result)
-			except TypeError:
-				raise Exception("Selector expression string to be provided. Got " + selector)
+		kwargs.update({'table_headers': table_headers})
+		if kwargs.get('table_type', 'rows') == "rows":
+			result_list = self.extract_rows(**kwargs)
 		else:
-			try:
-				if type(selector) in [str, unicode]:
-					selectors = [selector]
-				elif type(selector) == list:
-					selectors = selector
-				else:
-					raise Exception("Use a list of selector expressions for the various columns")
-				from itertools import izip, count
-				pairs = izip(table_headers, selectors)
-				columns = {}
-				for head, selector in pairs:
-					sel = cssselect.CSSSelector(selector)
-					columns[head] = sel(self.tree)
-				try:
-					for i in count(start=0):
-						r = result.copy()
-						for head in columns.keys():
-							if verbosity > 1:
-								print("\nExtracting", head, "attribute", sep=' ', end='')
-							col = columns[head][i]
-							if attr == "text":
-								try:
-									content = " ".join([make_ascii(x).strip() for x in col.itertext()])
-								except Exception:
-									content = default
-								content = content.replace("\n", " ").strip()
-							else:
-								content = col.get(attr)
-								if attr in ["href", "src"]:
-									content = urljoin(self.url, content)
-							r[head] = content
-						result_list.append(r)
-				except IndexError:
-					pass
-			except TypeError:
-				raise Exception("Selector expression string to be provided. Got " + selector)
+			result_list = self.extract_columns(**kwargs)
 		return table_headers, result_list

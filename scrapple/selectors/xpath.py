@@ -13,13 +13,7 @@ except ImportError:
 
 from lxml.etree import XPathError
 from scrapple.selectors.selector import Selector
-
-
-def make_ascii(s):
-    """
-    Convert text to ASCII
-    """
-    return "".join(i for i in s if ord(i) < 128)
+from scrapple.utils.text import make_ascii
 
 
 class XpathSelector(Selector):
@@ -36,7 +30,7 @@ class XpathSelector(Selector):
 		super(XpathSelector, self).__init__(url)
 
 
-	def extract_content(self, selector, attr, default):
+	def extract_content(self, *args, **kwargs):
 		"""
 		Method for performing the content extraction for the given XPath expression.
 
@@ -60,11 +54,12 @@ class XpathSelector(Selector):
 
 		"""
 		try:
+			selector, attr, default, connector = [kwargs.get(x, '') for x in ['selector', 'attr', 'default', 'connector']]
 			if selector == "url":
 				return self.url
 			if attr == "text":
 				tag = self.tree.xpath(selector)[0]
-				content = " ".join([make_ascii(x).strip() for x in tag.itertext()])
+				content = connector.join([make_ascii(x).strip() for x in tag.itertext()])
 				content = content.replace("\n", " ").strip()
 			else:
 				content = self.tree.xpath(selector)[0].get(attr)
@@ -79,7 +74,7 @@ class XpathSelector(Selector):
 			raise Exception("Invalid XPath selector " + selector)
 
 
-	def extract_links(self, selector):
+	def extract_links(self, *args, **kwargs):
 		"""
 		Method for performing the link extraction for the crawler.
 
@@ -97,6 +92,7 @@ class XpathSelector(Selector):
 		
 		"""
 		try:
+			selector = kwargs.get('selector', '')
 			links = self.tree.xpath(selector)
 			for link in links:
 				next_url = urljoin(self.url, link.get('href'))
@@ -105,7 +101,93 @@ class XpathSelector(Selector):
 			raise Exception("Invalid XPath selector " + selector)
 
 
-	def extract_tabular(self, result={}, table_type="rows", header=[], prefix="", suffix="", selector="", attr="text", default="", verbosity=0):
+	def extract_rows(self, *args, **kwargs):
+		"""
+		Row data extraction for extract_tabular
+		"""
+		result_list = []
+		result = kwargs.get('result', {})
+
+		try:
+			values = self.tree.xpath(kwargs.get('selector', ''))
+			if len(kwargs.get('table_headers', [])) >= len(values):
+				from itertools import izip_longest
+				pairs = izip_longest(kwargs.get('table_headers', []), values, fillvalue=kwargs.get('default', ''))
+			else:
+				from itertools import izip
+				pairs = izip(kwargs.get('table_headers', []), values)
+			for head, val in pairs:
+				if kwargs.get('verbosity', 0) > 1:
+					print("\nExtracting", head, "attribute", sep=' ', end='')
+				if kwargs.get('attr', 'text') == "text":
+					try:
+						content = kwargs.get('connector', '').join([make_ascii(x).strip() for x in val.itertext()])
+					except Exception:
+						content = kwargs.get('default', '')
+					content = content.replace("\n", " ").strip()
+				else:
+					content = val.get(kwargs.get('attr', 'text'))
+					if kwargs.get('attr', 'text') in ["href", "src"]:
+						content = urljoin(self.url, content)
+				result[head] = content
+			result_list.append(result)
+		except XPathError:
+			raise Exception("Invalid XPath selector " + kwargs.get('selector', ''))
+		except TypeError:
+			raise Exception("Selector expression string to be provided. Got " + kwargs.get('selector', ''))
+
+		return result_list
+
+
+	def extract_columns(self, *args, **kwargs):
+		"""
+		Column data extraction for extract_tabular
+		"""
+		result_list = []
+		result = kwargs.get('result', {})
+
+		try:
+			if type(kwargs.get('selector', '')) in [str, unicode]:
+				selectors = [kwargs.get('selector', '')]
+			elif type(kwargs.get('selector', '')) == list:
+				selectors = kwargs.get('selector', '')
+			else:
+				raise Exception("Use a list of selector expressions for the various columns")
+			from itertools import izip, count
+			pairs = izip(kwargs.get('table_headers', []), selectors)
+			columns = {}
+			for head, selector in pairs:
+				columns[head] = self.tree.xpath(selector)
+			try:
+				for i in count(start=0):
+					r = result.copy()
+					for head in columns.keys():
+						if kwargs.get('verbosity', 0) > 1:
+							print("\nExtracting", head, "attribute", sep=' ', end='')
+						col = columns[head][i]
+						if kwargs.get('attr', 'text') == "text":
+							try:
+								content = kwargs.get('connector', '').join([make_ascii(x).strip() for x in col.itertext()])
+							except Exception:
+								content = kwargs.get('default', '')
+							content = content.replace("\n", " ").strip()
+						else:
+							content = col.get(kwargs.get('attr', 'text'))
+							if kwargs.get('attr', 'text') in ["href", "src"]:
+								content = urljoin(self.url, content)
+						r[head] = content
+					result_list.append(r)
+			except IndexError:
+				pass
+		except XPathError:
+			raise Exception("Invalid XPath selector " + selector)
+		except TypeError:
+			raise Exception("Selector expression string to be provided. Got " + selector)
+
+		return result_list
+
+
+	def extract_tabular(self, *args, **kwargs):
 		"""
 		Method for performing the extraction of tabular data.
 
@@ -124,81 +206,20 @@ class XpathSelector(Selector):
 		:return: A 2-tuple containing the list of all the column headers extracted and the list of \
 		dictionaries which contain (header, content) pairs
 		"""
-		result_list = []
-		if type(header) in [str, unicode]:
+		result = kwargs.get('result', {})
+		if type(kwargs.get('header', [])) in [str, unicode]:
 			try:
-				header_list = self.tree.xpath(header)
-				table_headers = [prefix + h.text + suffix for h in header_list]
+				header_list = self.tree.xpath(kwargs.get('header', []))
+				table_headers = [kwargs.get('prefix', '') + h.text + kwargs.get('suffix', '') for h in header_list]
 			except XPathError:
-				raise Exception("Invalid XPath selector " + header)
+				raise Exception("Invalid XPath selector " + kwargs.get('header', []))
 		else:
-			table_headers = [prefix + h + suffix for h in header]
-		if table_type not in ["rows", "columns"]:
+			table_headers = [kwargs.get('prefix', '') + h + kwargs.get('suffix', '') for h in kwargs.get('header', [])]
+		if kwargs.get('table_type', 'rows') not in ["rows", "columns"]:
 			raise Exception("Specify 'rows' or 'columns' in table_type")
-		if table_type == "rows":
-			try:
-				values = self.tree.xpath(selector)
-				if len(table_headers) >= len(values):
-					from itertools import izip_longest
-					pairs = izip_longest(table_headers, values, fillvalue=default)
-				else:
-					from itertools import izip
-					pairs = izip(table_headers, values)
-				for head, val in pairs:
-					if verbosity > 1:
-						print("\nExtracting", head, "attribute", sep=' ', end='')
-					if attr == "text":
-						try:
-							content = " ".join([make_ascii(x).strip() for x in val.itertext()])
-						except Exception:
-							content = default
-						content = content.replace("\n", " ").strip()
-					else:
-						content = val.get(attr)
-						if attr in ["href", "src"]:
-							content = urljoin(self.url, content)
-					result[head] = content
-				result_list.append(result)
-			except XPathError:
-				raise Exception("Invalid XPath selector " + selector)
-			except TypeError:
-				raise Exception("Selector expression string to be provided. Got " + selector)
+		kwargs.update({'table_headers': table_headers})
+		if kwargs.get('table_type', 'rows') == "rows":
+			result_list = self.extract_rows(**kwargs)
 		else:
-			try:
-				if type(selector) in [str, unicode]:
-					selectors = [selector]
-				elif type(selector) == list:
-					selectors = selector
-				else:
-					raise Exception("Use a list of selector expressions for the various columns")
-				from itertools import izip, count
-				pairs = izip(table_headers, selectors)
-				columns = {}
-				for head, selector in pairs:
-					columns[head] = self.tree.xpath(selector)
-				try:
-					for i in count(start=0):
-						r = result.copy()
-						for head in columns.keys():
-							if verbosity > 1:
-								print("\nExtracting", head, "attribute", sep=' ', end='')
-							col = columns[head][i]
-							if attr == "text":
-								try:
-									content = " ".join([make_ascii(x).strip() for x in col.itertext()])
-								except Exception:
-									content = default
-								content = content.replace("\n", " ").strip()
-							else:
-								content = col.get(attr)
-								if attr in ["href", "src"]:
-									content = urljoin(self.url, content)
-							r[head] = content
-						result_list.append(r)
-				except IndexError:
-					pass
-			except XPathError:
-				raise Exception("Invalid XPath selector " + selector)
-			except TypeError:
-				raise Exception("Selector expression string to be provided. Got " + selector)
+			result_list = self.extract_columns(**kwargs)
 		return table_headers, result_list
